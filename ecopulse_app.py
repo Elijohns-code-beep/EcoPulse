@@ -7,6 +7,9 @@ import matplotlib
 import secrets
 import string
 import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 # Configure matplotlib
 matplotlib.use('Agg')
@@ -20,6 +23,33 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this-in-production'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ecopulse.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Load SMTP settings from smtp.env if it exists
+env_path = os.path.join(os.path.dirname(__file__), 'smtp.env')
+if os.path.exists(env_path):
+    with open(env_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                parts = line.split('=', 1)
+                if len(parts) == 2:
+                    key, val = parts[0].strip(), parts[1].strip()
+                    # Strip quotes if they exist around the value
+                    if len(val) >= 2 and val.startswith(('"', "'")) and val.endswith(('"', "'")):
+                        val = val[1:-1]
+                    # Also strip spaces from passwords
+                    if key == 'ECOULSE_SMTP_PASSWORD':
+                        val = ''.join(val.split())
+                    os.environ[key] = val
+
+app.config['SMTP_HOST'] = os.environ.get('ECOULSE_SMTP_HOST', '').strip()
+app.config['SMTP_PORT'] = int(os.environ.get('ECOULSE_SMTP_PORT', '587'))
+app.config['SMTP_USERNAME'] = os.environ.get('ECOULSE_SMTP_USERNAME', '').strip()
+app.config['SMTP_PASSWORD'] = os.environ.get('ECOULSE_SMTP_PASSWORD', '').strip()
+app.config['SMTP_FROM'] = os.environ.get('ECOULSE_SMTP_FROM', '').strip()
+app.config['SMTP_USE_TLS'] = os.environ.get('ECOULSE_SMTP_USE_TLS', 'true').strip().lower() in (
+    '1', 'true', 'yes', 'y', 'on'
+)
 
 db = SQLAlchemy(app)
 login_manager = LoginManager()
@@ -311,6 +341,46 @@ def get_user_readings(user_id, days=None, start_date=None, end_date=None):
 
 def calculate_co2_emissions(kwh, co2_per_kwh=0.385):
     return kwh * co2_per_kwh
+
+
+def send_email_notification(to_email, subject, html_body, text_body=None):
+    """
+    Send a real email using SMTP.
+    Returns: (success: bool, error_message: str | None)
+    """
+    try:
+        smtp_host = app.config.get('SMTP_HOST', '')
+        smtp_from = app.config.get('SMTP_FROM', '')
+        if not smtp_host or not smtp_from:
+            return False, "SMTP is not configured (missing SMTP_HOST or SMTP_FROM)."
+
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = smtp_from
+        msg['To'] = to_email
+
+        # Include plain text fallback too.
+        plain = text_body if text_body is not None else "Please view this email in an HTML-capable client."
+        msg.attach(MIMEText(plain, 'plain', 'utf-8'))
+        msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+
+        server = smtplib.SMTP(smtp_host, app.config.get('SMTP_PORT', 587), timeout=20)
+        try:
+            if app.config.get('SMTP_USE_TLS', True):
+                server.starttls()
+
+            smtp_username = app.config.get('SMTP_USERNAME', '')
+            smtp_password = app.config.get('SMTP_PASSWORD', '')
+            if smtp_username and smtp_password:
+                server.login(smtp_username, smtp_password)
+
+            server.sendmail(smtp_from, [to_email], msg.as_string())
+        finally:
+            server.quit()
+
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def generate_consumption_chart(user_id):
@@ -1133,6 +1203,15 @@ def send_report_to_customers(admin_id):
             )
             db.session.add(report)
             count += 1
+
+            # Real email notification (SMTP) for customers who opt in.
+            if getattr(customer, 'alert_email', False) and getattr(customer, 'email', None):
+                subject = f"EcoPulse Consumption Summary - {datetime.utcnow().strftime('%B %Y')}"
+                ok, err = send_email_notification(customer.email, subject, report_content)
+                if not ok:
+                    print(f"Consumption email failed for {customer.email}: {err}")
+                else:
+                    print(f"Consumption email sent to {customer.email}")
 
     db.session.commit()
     return count
@@ -2925,7 +3004,22 @@ def add_reading():
 
         # Check threshold and send alert
         if kwh > current_user.threshold:
-            print(f" Alert: Reading {kwh} kWh exceeds threshold {current_user.threshold}")
+            if getattr(current_user, 'alert_email', False) and getattr(current_user, 'email', None):
+                subject = "EcoPulse Energy Threshold Alert"
+                html_body = f"""
+                <h2>Energy Threshold Exceeded</h2>
+                <p>Dear {current_user.username},</p>
+                <p>Your latest reading for <strong>{date}</strong> is <strong>{kwh:.2f} kWh</strong>.</p>
+                <p>This exceeds your configured threshold of <strong>{current_user.threshold:.2f} kWh</strong>.</p>
+                <p>Please review your consumption and take appropriate action.</p>
+                """
+                ok, err = send_email_notification(current_user.email, subject, html_body)
+                if not ok:
+                    print(f"Email alert failed: {err}")
+                else:
+                    print(f"Email alert sent to {current_user.email}")
+            else:
+                print(f" Alert: Reading {kwh} kWh exceeds threshold {current_user.threshold}")
 
     except Exception as e:
         print(f"Error adding reading: {e}")
@@ -3004,8 +3098,22 @@ def send_payment_reminder(record_id):
     """Send payment reminder to customer"""
     record = FinancialRecord.query.get(record_id)
     if record and record.user:
-        print(f"📧 Payment reminder sent to {record.user.email} for Ksh {record.balance}")
-        return jsonify({'message': 'Reminder sent successfully'})
+        if getattr(record.user, 'alert_email', False) and getattr(record.user, 'email', None):
+            subject = "EcoPulse Payment Reminder"
+            html_body = f"""
+            <h2>Payment Reminder</h2>
+            <p>Dear {record.user.username},</p>
+            <p>This is a reminder that your balance is <strong>{record.balance:.2f} {record.user.currency}</strong>.</p>
+            <p>Please make your payment to avoid service interruption.</p>
+            """
+            ok, err = send_email_notification(record.user.email, subject, html_body)
+            if ok:
+                print(f"Payment reminder email sent to {record.user.email} for Ksh {record.balance}")
+                return jsonify({'message': 'Reminder sent successfully'})
+            return jsonify({'message': f'Error sending reminder email: {err}'})
+
+        return jsonify({'message': 'Customer email alerts are disabled'})
+
     return jsonify({'message': 'Error sending reminder'})
 
 

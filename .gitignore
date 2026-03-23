@@ -1,11 +1,18 @@
-# Python
+# Environments
+.venv/
+venv/
+env/
+
+# Python caching
 __pycache__/
 *.pyc
-.venv/
+*.pyo
+*.pyd
 
-# IDE
-.idea/
+# Databases
+*.db
+*.sqlite3
+instance/
 
-# Local secrets
-secrets.env
-
+# Secrets
+smtp.env
