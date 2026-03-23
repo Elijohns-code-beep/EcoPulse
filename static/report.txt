@@ -1,0 +1,29 @@
+EcoPulse Energy Report
+======================
+
+Jan: 450.0 kWh
+Feb: 480.0 kWh
+Mar: 520.0 kWh
+Jan: 450.0 kWh
+Feb: 480.0 kWh
+Mar: 520.0 kWh
+Jan: 450.0 kWh
+Feb: 480.0 kWh
+Mar: 520.0 kWh
+Jan: 450.0 kWh
+Feb: 480.0 kWh
+Mar: 520.0 kWh
+4: 23.0 kWh
+4: 60.0 kWh
+4: 500.0 kWh
+4: 600.0 kWh
+6: 78.0 kWh
+3: 43.0 kWh
+7: 56.0 kWh
+August: 56.0 kWh
+May: 340.0 kWh
+
+Total Consumption: 7556.0 kWh
+Average Consumption: 359.81 kWh
+
+Recommendation: Consumption is within safe limits.
